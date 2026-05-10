@@ -11,7 +11,7 @@ const HOTMAIL_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
 const HOTMAIL_OAUTH_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const HOTMAIL_DEFAULT_REDIRECT_URI = "http://localhost:8787/callback";
 const HOTMAIL_DEFAULT_SCOPE = "openid profile User.Read Mail.ReadWrite Mail.Send Mail.Read";
-const HOTMAIL_POLL_ATTEMPTS = 36;
+const HOTMAIL_POLL_ATTEMPTS = 12;
 const HOTMAIL_POLL_INTERVAL_MS = 5000;
 const HOTMAIL_MESSAGE_FETCH_LIMIT = 10;
 const HOTMAIL_FOLDER_IDS = ["inbox", "junkemail"];
@@ -366,6 +366,10 @@ async function getLatestVerificationMessage(targetEmail, account) {
         })),
         {
             targetEmail,
+            candidateMatcher: (mail) =>
+                /(OpenAI|ChatGPT)/i.test(
+                    `${mail.subject ?? ""}\n${mail.bodyPreview ?? ""}\n${mail.from ?? ""}`,
+                ),
         },
     );
 }

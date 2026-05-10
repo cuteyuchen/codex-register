@@ -1,6 +1,6 @@
 import {appConfig} from "../config.js";
 import {generateEmailName} from "./generate-email-name.js";
-import {fetch as undiciFetch, Agent, ProxyAgent, type Dispatcher, type RequestInit as UndiciRequestInit} from "undici";
+import {Agent, type Dispatcher, fetch as undiciFetch, ProxyAgent, type RequestInit as UndiciRequestInit} from "undici";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
 
@@ -21,9 +21,10 @@ interface CloudflareMailboxListPayload {
     offset?: number;
 }
 
-interface CloudflareLatestMailPayload extends CloudflareMailItem {}
+interface CloudflareLatestMailPayload extends CloudflareMailItem {
+}
 
-const CLOUDFLARE_POLL_ATTEMPTS = 36;
+const CLOUDFLARE_POLL_ATTEMPTS = 12;
 const CLOUDFLARE_POLL_INTERVAL_MS = 5000;
 
 function normalizeEmail(value: string): string {

@@ -175,6 +175,16 @@ export interface AuthLoginResult {
     authFile?: string;
 }
 
+interface ChatGPTAuthSession {
+    accessToken?: string;
+    access_token?: string;
+    error?: string;
+}
+
+interface ChatGPTAccessTokenClaims {
+    exp?: number;
+}
+
 export interface SavedAuthRecord {
     access_token: string;
     account_id: string;
@@ -859,6 +869,56 @@ export class OpenAIClient {
         }
     }
 
+    async getChatGPTAccessToken(): Promise<string> {
+        const response = await this.fetch(`${CHATGPT_BASE_URL}/api/auth/session`, {
+            method: "GET",
+            headers: this.createBrowserHeaders({
+                accept: "application/json",
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+                referer: `${CHATGPT_BASE_URL}/`,
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`获取 ChatGPT accessToken 失败: ${await this.formatErrorResponse(response)}`);
+        }
+
+        const payload = (await response.json()) as ChatGPTAuthSession;
+        const accessToken = String(payload.accessToken ?? payload.access_token ?? "").trim();
+        if (!accessToken) {
+            throw new Error(`ChatGPT session 中缺少 accessToken: ${JSON.stringify(payload)}`);
+        }
+        return accessToken;
+    }
+
+    async saveChatGPTAccessToken(accessToken: string): Promise<string> {
+        const atDir = path.resolve(process.cwd(), "auth", "at");
+        await mkdir(atDir, {recursive: true});
+        const fileName = this.buildAuthFileName(this.email);
+        const filePath = path.join(atDir, fileName);
+        const accessClaims = this.decodeJwtPayload<ChatGPTAccessTokenClaims>(accessToken);
+        const expiresAt = accessClaims.exp
+            ? new Date(accessClaims.exp * 1000).toISOString()
+            : "";
+        await writeFile(
+            filePath,
+            `${JSON.stringify({
+                access_token: accessToken,
+                expires_at: expiresAt,
+                expires_in: accessClaims.exp
+                    ? Math.max(0, Math.floor(accessClaims.exp - Date.now() / 1000))
+                    : 0,
+                email: this.email,
+                cookie: await this.jar.getCookieString(CHATGPT_BASE_URL),
+                last_refresh: new Date().toISOString(),
+                type: "chatgpt",
+            }, null, 2)}\n`,
+            "utf8",
+        );
+        return filePath;
+    }
+
     private async exchangeCodeForToken(code: string): Promise<SavedAuthRecord> {
         let lastError = "";
         for (const tokenURL of AUTH_OAUTH_TOKEN_URLS) {
@@ -992,14 +1052,7 @@ export class OpenAIClient {
     private async saveAuthRecord(record: SavedAuthRecord): Promise<string> {
         const authDir = path.resolve(process.cwd(), "auth");
         await mkdir(authDir, {recursive: true});
-        const now = new Date();
-        const date = [
-            now.getFullYear(),
-            `${now.getMonth() + 1}`.padStart(2, "0"),
-            `${now.getDate()}`.padStart(2, "0"),
-        ].join("-");
-        const safeEmail = record.email.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
-        const fileName = `${date}-${safeEmail}.json`;
+        const fileName = this.buildAuthFileName(record.email);
         const filePath = path.join(authDir, fileName);
         await writeFile(filePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
 
@@ -1015,6 +1068,17 @@ export class OpenAIClient {
         }
 
         return filePath;
+    }
+
+    private buildAuthFileName(email: string): string {
+        const now = new Date();
+        const date = [
+            now.getFullYear(),
+            `${now.getMonth() + 1}`.padStart(2, "0"),
+            `${now.getDate()}`.padStart(2, "0"),
+        ].join("-");
+        const safeEmail = email.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_");
+        return `${date}-${safeEmail}.json`;
     }
 
     private randomProfile(): { name: string; birthdate: string } {

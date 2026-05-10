@@ -6,7 +6,7 @@ import {findLatestVerificationMail} from "./verification-matcher.js";
 const GMAIL_API_BASE_URL = "https://gmail.googleapis.com/gmail/v1";
 const GMAIL_USER_ID = "me";
 const GMAIL_DOMAINS = ["gmail.com", "googlemail.com"];
-const GMAIL_POLL_ATTEMPTS = 36;
+const GMAIL_POLL_ATTEMPTS = 12;
 const GMAIL_POLL_INTERVAL_MS = 5000;
 const GMAIL_MAX_RESULTS = 10;
 

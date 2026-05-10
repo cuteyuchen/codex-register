@@ -37,6 +37,7 @@ async function runOnce(): Promise<void> {
     const email = readArgValue("--email").trim();
     const manualOtp = hasFlag("--otp");
     const directSignupAuth = hasFlag("--sign");
+    const saveAccessToken = hasFlag("--at");
     const deviceProfile = generateRandomDeviceProfile();
     if (directSignupAuth) {
         const client = new OpenAIClient({
@@ -62,6 +63,15 @@ async function runOnce(): Promise<void> {
         smsBroker
     });
     await registerClient.authRegisterHTTP();
+
+    if (saveAccessToken) {
+        const accessToken = await registerClient.getChatGPTAccessToken();
+        const accessTokenFile = await registerClient.saveChatGPTAccessToken(accessToken);
+        console.log(`[✅️注册成功] 邮箱：${registerClient.email} 密码：${appConfig.defaultPassword}`);
+        console.log(`[access_token_file] ${accessTokenFile}`);
+        console.log(`[access_token] ${accessToken}`);
+        return;
+    }
 
     const loginClient = new OpenAIClient({
         email: registerClient.email,

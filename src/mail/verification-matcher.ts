@@ -22,10 +22,44 @@ export function normalizeMailbox(value: string): string {
     return (angleMatch?.[1] ?? input).trim();
 }
 
+function normalizeTextForCodeMatching(text: string): string {
+    return String(text ?? "")
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&#(\d+);/g, (_, codePoint) => String.fromCharCode(Number(codePoint)))
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function normalizeSixDigitCode(value: string | undefined): string {
+    const digitsOnly = String(value ?? "").replace(/\D/g, "");
+    return digitsOnly.length === 6 ? digitsOnly : "";
+}
+
 function extractVerificationCode(text: string): string {
-    const raw = String(text ?? "");
+    const raw = normalizeTextForCodeMatching(text);
     if (!raw) {
         return "";
+    }
+
+    const contextPatterns = [
+        /\b((?:\d[\s-]*){6})\b(?=.{0,80}\b(?:is your|your|OpenAI|ChatGPT|verification|security|login|sign[-\s]?in|code|验证码)\b)/i,
+        /\b(?:OpenAI|ChatGPT|verification|security|login|sign[-\s]?in|code|验证码)\b.{0,120}?\b((?:\d[\s-]*){6})\b/i,
+        /\b((?:\d[\s-]*){6})\b.{0,80}?\b(?:OpenAI|ChatGPT|verification|security|login|sign[-\s]?in|code|验证码)\b/i,
+    ];
+    for (const pattern of contextPatterns) {
+        const matched = raw.match(pattern);
+        const code = normalizeSixDigitCode(matched?.[1]);
+        if (code) {
+            return code;
+        }
     }
 
     const directMatch = raw.match(/\b(\d{6})\b/);
@@ -33,15 +67,9 @@ function extractVerificationCode(text: string): string {
         return directMatch[1];
     }
 
-    const compactMatch = raw
-        .replace(/<[^>]+>/g, " ")
-        .match(/(?:^|[^\d])((?:\d[\s-]*){6})(?:[^\d]|$)/);
-    if (!compactMatch?.[1]) {
-        return "";
-    }
-
-    const digitsOnly = compactMatch[1].replace(/\D/g, "");
-    return digitsOnly.length === 6 ? digitsOnly : "";
+    return normalizeSixDigitCode(
+        raw.match(/(?:^|[^\d])((?:\d[\s-]*){6})(?:[^\d]|$)/)?.[1],
+    );
 }
 
 function normalizeRecipientList(recipient: string | string[] | undefined): string[] {

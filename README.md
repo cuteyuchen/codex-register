@@ -106,6 +106,9 @@ npm run start -- [参数]
     - 手动输入邮箱验证码
 - `--sign`
     - 直接注册并授权
+- `--at`
+    - 只注册 ChatGPT，不走 Codex OAuth 授权；注册成功后读取 ChatGPT `accessToken`
+    - token 会保存到 `./auth/at/日期-邮箱.json`，文件名规则与 `./auth` 授权文件一致
 - `--st`
     - Sentinel 使用浏览器模式
 
@@ -139,6 +142,24 @@ npm run dev -- --email your_mail@example.com --otp
 
 ```bash
 npm run dev -- --email your_mail@example.com --sign
+```
+
+#### 只注册并保存 ChatGPT accessToken
+
+```bash
+npm run dev -- --at
+```
+
+指定邮箱：
+
+```bash
+npm run dev -- --email your_mail@example.com --at
+```
+
+输出文件位于：
+
+```text
+./auth/at/日期-邮箱.json
 ```
 
 如果要启用短信验证，见教程：
@@ -416,3 +437,11 @@ Cloudflare Worker 部署说明见：[MAIL_WORKER_DEPLOY.md](./MAIL_WORKER_DEPLOY
 - auth 文件仍然会先保存到本地 `./auth`
 - 然后再调用 CLIProxyAPI 管理接口上传
 - 上传失败不会中断主流程，只会输出警告日志
+
+## 更新日志
+
+### 2026-05-04
+
+- 新增主程序参数 `--at`：
+    - 注册成功后直接获取 ChatGPT `accessToken` 可用于聊天和生成图片
+    - 自动保存到 `./auth/at/日期-邮箱.json`

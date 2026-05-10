@@ -13,7 +13,7 @@ const PROXIEDMAIL_REAL_ADDRESS = "proxiedmail@kuaileshifu.top";
 const PROXIEDMAIL_DOMAINS = ["pxdmail.net", "pxdmail.com"];//proxiedmail.com 这个滥用了
 const PROXIEDMAIL_SIGNUP_DOMAIN = "gmail.com";
 const PROXIEDMAIL_SIGNUP_PASSWORD = "zxcv123456789..";
-const PROXIEDMAIL_POLL_ATTEMPTS = 36;
+const PROXIEDMAIL_POLL_ATTEMPTS = 12;
 const PROXIEDMAIL_POLL_INTERVAL_MS = 5000;
 const PROXIEDMAIL_ACCOUNT_FILE = path.resolve(process.cwd(), "proxiedmail-account.json");
 

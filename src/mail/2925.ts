@@ -11,7 +11,7 @@ import {
 } from "./verification-matcher.js";
 
 const PROVIDER_DEVICE_UID = "28960a33-9af0-4ea7-9e1c-bccc5b7cc564";
-const PROVIDER_POLL_ATTEMPTS = 36;
+const PROVIDER_POLL_ATTEMPTS = 12;
 const PROVIDER_POLL_INTERVAL_MS = 5000;
 const GENERATED_EMAIL_DOMAIN = "2925.com";
 const WEB_LOGIN_URL = "https://www.2925.com/mailv2/auth/weblogin";
