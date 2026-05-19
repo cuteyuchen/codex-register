@@ -1,6 +1,11 @@
 import {appConfig} from "./config.js";
 import {generateRandomDeviceProfile} from "./device-profile.js";
-import {appendErrorEmail, clearErrorEmailFile} from "./email-error-recorder.js";
+import {
+    appendErrorEmail,
+    appendSuccessEmail,
+    clearErrorEmailFile,
+    removeEmailFromSourceFile,
+} from "./email-error-recorder.js";
 import {
     getHotmailXiongmaodianEmailsFile,
     getHotmailXiongmaodianRemainingEmailCount,
@@ -42,6 +47,17 @@ async function recordAuthFailureEmail(email: string): Promise<void> {
     const errorFile = await appendErrorEmail(email);
     if (errorFile) {
         console.error(`[失败记录] 已写入 ${errorFile}`);
+    }
+}
+
+async function removeSuccessfulEmail(email: string): Promise<void> {
+    const successFile = await appendSuccessEmail(email);
+    if (successFile) {
+        console.log(`[成功记录] 已写入 ${successFile}`);
+    }
+    const sourceFile = await removeEmailFromSourceFile(email);
+    if (sourceFile) {
+        console.log(`[邮箱文件] 授权成功，已从 ${sourceFile} 删除 ${email}`);
     }
 }
 
@@ -87,6 +103,7 @@ async function runOnce(): Promise<RunOnceResult> {
         console.log(
             `[✅️授权成功] 邮箱：${client.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
         );
+        await removeSuccessfulEmail(client.email);
         return {email: client.email};
     }
 
@@ -130,6 +147,7 @@ async function runOnce(): Promise<RunOnceResult> {
     console.log(
         `[✅️授权成功] 邮箱：${loginClient.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
     );
+    await removeSuccessfulEmail(loginClient.email);
     return {email: loginClient.email};
 }
 

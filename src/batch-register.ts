@@ -2,7 +2,12 @@ import {readFile} from "node:fs/promises";
 import path from "node:path";
 import {appConfig} from "./config.js";
 import {generateRandomDeviceProfile} from "./device-profile.js";
-import {appendErrorEmail, recordEmailSourceFile} from "./email-error-recorder.js";
+import {
+    appendErrorEmail,
+    appendSuccessEmail,
+    recordEmailSourceFile,
+    removeEmailFromSourceFile,
+} from "./email-error-recorder.js";
 import {OpenAIClient} from "./openai.js";
 
 const DEFAULT_DELAY_MS = 3000;
@@ -83,6 +88,14 @@ async function runForEmail(email: string): Promise<void> {
         console.log(
             `[授权成功] 邮箱：${client.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
         );
+        const successFile = await appendSuccessEmail(client.email);
+        if (successFile) {
+            console.log(`[成功记录] 已写入 ${successFile}`);
+        }
+        const sourceFile = await removeEmailFromSourceFile(client.email);
+        if (sourceFile) {
+            console.log(`[邮箱文件] 授权成功，已从 ${sourceFile} 删除 ${client.email}`);
+        }
         return;
     }
 
@@ -114,6 +127,14 @@ async function runForEmail(email: string): Promise<void> {
     console.log(
         `[授权成功] 邮箱：${loginClient.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
     );
+    const successFile = await appendSuccessEmail(loginClient.email);
+    if (successFile) {
+        console.log(`[成功记录] 已写入 ${successFile}`);
+    }
+    const sourceFile = await removeEmailFromSourceFile(loginClient.email);
+    if (sourceFile) {
+        console.log(`[邮箱文件] 授权成功，已从 ${sourceFile} 删除 ${loginClient.email}`);
+    }
 }
 
 async function main(): Promise<void> {
