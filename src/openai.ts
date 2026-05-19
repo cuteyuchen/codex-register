@@ -36,6 +36,8 @@ type FetchLike = typeof fetch;
 const DEFAULT_INSECURE_TLS = true;
 const FETCH_RETRY_COUNT = 3;
 const FETCH_RETRY_DELAY_MS = 1500;
+const COMMAND_AUTH_DIR_NAME = formatCommandAuthDirName(new Date());
+const EMAIL_OTP_SUBMIT_ATTEMPTS = 3;
 
 function resolveProxyUrl(): string {
     return appConfig.defaultProxyUrl;
@@ -43,6 +45,19 @@ function resolveProxyUrl(): string {
 
 function shouldAllowInsecureTLS(): boolean {
     return DEFAULT_INSECURE_TLS;
+}
+
+function formatCommandAuthDirName(date: Date): string {
+    const parts = [
+        date.getFullYear(),
+        `${date.getMonth() + 1}`.padStart(2, "0"),
+        `${date.getDate()}`.padStart(2, "0"),
+    ];
+    const timeParts = [
+        `${date.getHours()}`.padStart(2, "0"),
+        `${date.getMinutes()}`.padStart(2, "0"),
+    ];
+    return `${parts.join("-")} ${timeParts.join("-")}`;
 }
 
 function createDispatcher(proxyUrl: string, allowInsecureTLS: boolean): Dispatcher {
@@ -546,25 +561,35 @@ export class OpenAIClient {
     }
 
     async emailOtpValidate(): Promise<string> {
-        const code = await this.resolveEmailOtpCode();
-        const response = await this.fetch(AUTH_EMAIL_OTP_VALIDATE_URL, {
-            method: "POST",
-            headers: {
-                accept: "application/json",
-                "content-type": "application/json",
-                origin: AUTH_BASE_URL,
-                referer: `${AUTH_BASE_URL}/email-verification`,
-                "user-agent": this.userAgent,
-            },
-            body: JSON.stringify({code}),
-        });
-        if (!response.ok) {
-            throw new Error(
-                `EmailOtpValidate请求失败: ${await this.formatErrorResponse(response)}`,
+        const rejectedCodes: string[] = [];
+        let lastError = "";
+
+        for (let attempt = 1; attempt <= EMAIL_OTP_SUBMIT_ATTEMPTS; attempt += 1) {
+            const code = await this.resolveEmailOtpCode(rejectedCodes);
+            const response = await this.fetch(AUTH_EMAIL_OTP_VALIDATE_URL, {
+                method: "POST",
+                headers: {
+                    accept: "application/json",
+                    "content-type": "application/json",
+                    origin: AUTH_BASE_URL,
+                    referer: `${AUTH_BASE_URL}/email-verification`,
+                    "user-agent": this.userAgent,
+                },
+                body: JSON.stringify({code}),
+            });
+            if (response.ok) {
+                const payload = (await response.json()) as ContinueResponse;
+                return payload.continue_url;
+            }
+
+            lastError = await this.formatErrorResponse(response);
+            console.warn(
+                `EmailOtpValidate请求失败(${attempt}/${EMAIL_OTP_SUBMIT_ATTEMPTS}) code=${code}: ${lastError}`,
             );
+            rejectedCodes.push(code);
         }
-        const payload = (await response.json()) as ContinueResponse;
-        return payload.continue_url;
+
+        throw new Error(`EmailOtpValidate请求失败: ${lastError}`);
     }
 
     async registerPassword(): Promise<string> {
@@ -773,13 +798,13 @@ export class OpenAIClient {
         });
     }
 
-    private async resolveEmailOtpCode(): Promise<string> {
+    private async resolveEmailOtpCode(excludeCodes: string[] = []): Promise<string> {
         if (this.manualMode) {
             console.log(`manualEmailOtp: targetEmail=${this.email}`);
             return this.promptEmailOtp();
         }
         console.log(`autoEmailOtp: provider=${MAILBOX_CONFIG.provider} targetEmail=${this.email}`);
-        const code = await getEmailVerificationCode(this.email);
+        const code = await getEmailVerificationCode(this.email, {excludeCodes});
         console.log(`[emailOtp] code=${code}`);
         return code;
     }
@@ -1102,7 +1127,7 @@ export class OpenAIClient {
     }
 
     private async saveAuthRecord(record: SavedAuthRecord): Promise<string> {
-        const authDir = path.resolve(process.cwd(), "auth");
+        const authDir = path.resolve(process.cwd(), "auth", COMMAND_AUTH_DIR_NAME);
         await mkdir(authDir, {recursive: true});
         const fileName = this.buildAuthFileName(record.email);
         const filePath = path.join(authDir, fileName);

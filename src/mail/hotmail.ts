@@ -2,6 +2,7 @@
 import {readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {appConfig} from "../config.js";
+import {recordEmailSourceFile} from "../email-error-recorder.js";
 import {generateEmailName} from "./generate-email-name.js";
 import {createHotmailXiongmaodianProvider} from "./hotmail-xiongmaodian.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
@@ -410,6 +411,7 @@ export function createHotmailProvider() {
             const account = chooseRandomAccount(accounts);
             const aliasEmail = buildAliasAddress(account);
             aliasAccountMap.set(normalizeEmail(aliasEmail), account);
+            recordEmailSourceFile(aliasEmail, HOTMAIL_TOKENS_FILE);
             return aliasEmail;
         },
         async getEmailVerificationCode(email) {

@@ -1,12 +1,14 @@
 import {readFile} from "node:fs/promises";
 import path from "node:path";
-import type {EmailCodeProvider} from "../mailbox.js";
+import {recordEmailSourceFile} from "../email-error-recorder.js";
+import type {EmailCodeProvider, EmailVerificationCodeOptions} from "../mailbox.js";
 import {findLatestVerificationMail, normalizeMailbox} from "./verification-matcher.js";
 
 const EMAILS_FILE = path.resolve(process.cwd(), "hotmail", "emails.txt");
 const API_BASE = "https://mail.xiongmaodianjing.top/api/fetch";
 const POLL_ATTEMPTS = 12;
 const POLL_INTERVAL_MS = 5000;
+const SAME_CODE_OBSERVE_ATTEMPTS = 3;
 
 interface XmdEmail {
     date?: string;
@@ -21,11 +23,12 @@ interface XmdResponse {
     emails?: XmdEmail[];
 }
 
-let emailCache: string[] | null = null;
+let emailQueue: string[] | null = null;
+const lastAcceptedCodeByEmail = new Map<string, string>();
 
 async function loadEmails(): Promise<string[]> {
-    if (emailCache) {
-        return emailCache;
+    if (emailQueue) {
+        return emailQueue;
     }
     let raw: string;
     try {
@@ -48,12 +51,17 @@ async function loadEmails(): Promise<string[]> {
     if (list.length === 0) {
         throw new Error(`${EMAILS_FILE} 为空，请填入至少一个 outlook 邮箱`);
     }
-    emailCache = list;
-    return list;
+    emailQueue = list;
+    return emailQueue;
 }
 
-function chooseRandom(list: string[]): string {
-    return list[Math.floor(Math.random() * list.length)];
+export function getHotmailXiongmaodianEmailsFile(): string {
+    return EMAILS_FILE;
+}
+
+export async function getHotmailXiongmaodianRemainingEmailCount(): Promise<number> {
+    const queue = await loadEmails();
+    return queue.length;
 }
 
 function parseTimestamp(date: string | undefined): number {
@@ -86,14 +94,32 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function normalizeCode(value: string): string {
+    const digitsOnly = String(value ?? "").replace(/\D/g, "");
+    return digitsOnly.length === 6 ? digitsOnly : "";
+}
+
 export function createHotmailXiongmaodianProvider(): EmailCodeProvider {
     return {
         async getEmailAddress(): Promise<string> {
-            const list = await loadEmails();
-            return chooseRandom(list);
+            const queue = await loadEmails();
+            const email = queue.shift();
+            if (!email) {
+                throw new Error(`${EMAILS_FILE} 中的邮箱已全部使用完毕`);
+            }
+            recordEmailSourceFile(email, EMAILS_FILE);
+            console.log(`xiongmaodianEmailQueue: remaining=${queue.length} selected=${email}`);
+            return email;
         },
-        async getEmailVerificationCode(email: string): Promise<string> {
+        async getEmailVerificationCode(
+            email: string,
+            options: EmailVerificationCodeOptions = {},
+        ): Promise<string> {
             const targetEmail = normalizeMailbox(email);
+            const excludedCodes = (options.excludeCodes ?? [])
+                .map((code) => normalizeCode(code))
+                .filter(Boolean);
+            const lastAcceptedCode = lastAcceptedCodeByEmail.get(targetEmail) ?? "";
             for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
                 console.log(
                     `pollHotmailOtp(xiongmaodian): attempt=${attempt}/${POLL_ATTEMPTS} targetEmail=${targetEmail}`,
@@ -122,6 +148,8 @@ export function createHotmailXiongmaodianProvider(): EmailCodeProvider {
 
                     const matched = findLatestVerificationMail(candidates, {
                         targetEmail,
+                        rememberLastCode: false,
+                        excludeCodes: excludedCodes,
                         candidateMatcher: (mail) =>
                             /(OpenAI|ChatGPT)/i.test(
                                 `${mail.subject ?? ""}\n${mail.content ?? ""}\n${mail.sender ?? ""}`,
@@ -129,7 +157,23 @@ export function createHotmailXiongmaodianProvider(): EmailCodeProvider {
                     });
 
                     if (matched?.verificationCode) {
-                        return matched.verificationCode;
+                        if (
+                            lastAcceptedCode &&
+                            matched.verificationCode === lastAcceptedCode &&
+                            attempt < SAME_CODE_OBSERVE_ATTEMPTS
+                        ) {
+                            console.log(
+                                `pollHotmailOtp(xiongmaodian): same code ${matched.verificationCode} as previous, wait until attempt ${SAME_CODE_OBSERVE_ATTEMPTS}`,
+                            );
+                        } else {
+                            lastAcceptedCodeByEmail.set(targetEmail, matched.verificationCode);
+                            if (lastAcceptedCode && matched.verificationCode === lastAcceptedCode) {
+                                console.log(
+                                    `pollHotmailOtp(xiongmaodian): reuse same code ${matched.verificationCode} after ${attempt} attempts`,
+                                );
+                            }
+                            return matched.verificationCode;
+                        }
                     }
                 }
 

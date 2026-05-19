@@ -12,6 +12,7 @@ interface FindVerificationMailOptions<T> {
     targetEmail?: string;
     candidateMatcher?: (mail: T) => boolean;
     rememberLastCode?: boolean;
+    excludeCodes?: string[];
 }
 
 const lastVerificationCodeByEmail = new Map<string, string>();
@@ -94,7 +95,15 @@ export function findLatestVerificationMail<T extends VerificationMailCandidate>(
     options: FindVerificationMailOptions<T> = {},
 ): (T & { verificationCode: string }) | null {
     const targetEmail = normalizeMailbox(options.targetEmail ?? "");
-    const previousCode = targetEmail ? lastVerificationCodeByEmail.get(targetEmail) ?? "" : "";
+    const shouldRememberLastCode = options.rememberLastCode !== false;
+    const previousCode = targetEmail && shouldRememberLastCode
+        ? lastVerificationCodeByEmail.get(targetEmail) ?? ""
+        : "";
+    const excludedCodes = new Set(
+        (options.excludeCodes ?? [])
+            .map((code) => normalizeSixDigitCode(code))
+            .filter(Boolean),
+    );
     const sorted = [...mails].sort(
         (left, right) => Number(right.timestamp ?? 0) - Number(left.timestamp ?? 0),
     );
@@ -119,6 +128,10 @@ export function findLatestVerificationMail<T extends VerificationMailCandidate>(
             continue;
         }
 
+        if (excludedCodes.has(verificationCode)) {
+            continue;
+        }
+
         if (previousCode && verificationCode === previousCode) {
             continue;
         }
@@ -127,7 +140,7 @@ export function findLatestVerificationMail<T extends VerificationMailCandidate>(
             ...mail,
             verificationCode,
         };
-        if (targetEmail && options.rememberLastCode !== false) {
+        if (targetEmail && shouldRememberLastCode) {
             lastVerificationCodeByEmail.set(targetEmail, verificationCode);
         }
         return matchedMail;

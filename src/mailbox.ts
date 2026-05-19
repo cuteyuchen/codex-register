@@ -8,7 +8,11 @@ import {createProxiedMailProvider} from "./mail/proxiedmail.js";
 
 export interface EmailCodeProvider {
   getEmailAddress(): Promise<string>;
-  getEmailVerificationCode(email: string): Promise<string>;
+  getEmailVerificationCode(email: string, options?: EmailVerificationCodeOptions): Promise<string>;
+}
+
+export interface EmailVerificationCodeOptions {
+  excludeCodes?: string[];
 }
 
 export const MAILBOX_CONFIG: {
@@ -42,6 +46,9 @@ export async function getEmailAddress(): Promise<string> {
   return provider.getEmailAddress();
 }
 
-export async function getEmailVerificationCode(email: string): Promise<string> {
-  return provider.getEmailVerificationCode(email);
+export async function getEmailVerificationCode(
+  email: string,
+  options?: EmailVerificationCodeOptions,
+): Promise<string> {
+  return provider.getEmailVerificationCode(email, options);
 }

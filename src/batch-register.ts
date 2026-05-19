@@ -2,6 +2,7 @@ import {readFile} from "node:fs/promises";
 import path from "node:path";
 import {appConfig} from "./config.js";
 import {generateRandomDeviceProfile} from "./device-profile.js";
+import {appendErrorEmail, recordEmailSourceFile} from "./email-error-recorder.js";
 import {OpenAIClient} from "./openai.js";
 
 const DEFAULT_DELAY_MS = 3000;
@@ -18,26 +19,37 @@ function hasFlag(flag: string): boolean {
     return process.argv.includes(flag);
 }
 
-async function loadEmails(): Promise<string[]> {
+interface LoadedEmails {
+    emails: string[];
+    sourceFilePath?: string;
+}
+
+async function loadEmails(): Promise<LoadedEmails> {
     const emailsArg = readArgValue("--emails").trim();
     if (emailsArg) {
-        return emailsArg
+        return {
+            emails: emailsArg
             .split(",")
             .map((item) => item.trim())
-            .filter(Boolean);
+            .filter(Boolean),
+        };
     }
 
     const fileArg = readArgValue("--file").trim();
     if (fileArg) {
         const filePath = path.resolve(fileArg);
         const raw = await readFile(filePath, "utf8");
-        return raw
+        const emails = raw
             .split(/\r?\n/)
             .map((item) => item.trim())
             .filter(Boolean);
+        for (const email of emails) {
+            recordEmailSourceFile(email, filePath);
+        }
+        return {emails, sourceFilePath: filePath};
     }
 
-    return [];
+    return {emails: []};
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -58,7 +70,16 @@ async function runForEmail(email: string): Promise<void> {
             manualMode: false,
             signupScreenHint: "sign",
         });
-        const result = await client.authRegisterAndAuthorizeHTTP();
+        let result;
+        try {
+            result = await client.authRegisterAndAuthorizeHTTP();
+        } catch (error) {
+            const errorFile = await appendErrorEmail(client.email);
+            if (errorFile) {
+                console.error(`[失败记录] 已写入 ${errorFile}`);
+            }
+            throw error;
+        }
         console.log(
             `[授权成功] 邮箱：${client.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
         );
@@ -80,14 +101,24 @@ async function runForEmail(email: string): Promise<void> {
         deviceProfile,
         manualMode: false,
     });
-    const result = await loginClient.authLoginHTTP();
+    let result;
+    try {
+        result = await loginClient.authLoginHTTP();
+    } catch (error) {
+        const errorFile = await appendErrorEmail(loginClient.email);
+        if (errorFile) {
+            console.error(`[失败记录] 已写入 ${errorFile}`);
+        }
+        throw error;
+    }
     console.log(
         `[授权成功] 邮箱：${loginClient.email} 密码：${appConfig.defaultPassword} 授权文件：${result.authFile ?? ""}`,
     );
 }
 
 async function main(): Promise<void> {
-    const emails = await loadEmails();
+    const loadedEmails = await loadEmails();
+    const {emails, sourceFilePath} = loadedEmails;
     const delayMs = Number.parseInt(readArgValue("--delay-ms").trim(), 10) || DEFAULT_DELAY_MS;
     const stopOnError = hasFlag("--stop-on-error");
 
