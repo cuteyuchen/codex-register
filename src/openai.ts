@@ -310,23 +310,8 @@ export class OpenAIClient {
         }
 
         if (continueURL === `${AUTH_BASE_URL}/add-phone`) {
-            this.logProgress('4-a', totalSteps, "进入短信验证流程，从接码平台获取号码");
-            if (!this.smsBroker) {
-                throw new Error("未配置 SMS provider，无法进行短信验证");
-            }
-            const lease = await this.smsBroker.getActivation();
-            this.logProgress('4-b', totalSteps, `发送短信验证码，phone=+${lease.phoneNumber}`);
-            const phoneNumber = `+${lease.phoneNumber}`
-            continueURL = await this.sendPhoneOtp(phoneNumber)
-              // sendPhoneOtp 过程中可能遇到 phone_max_usage_exceed 错误，需要手动标记失败并进行轮换
-              .catch(async (e) => {
-                  await this.smsBroker?.markAsFailed(true)
-                  throw e
-              });
-            this.logProgress('4-c', totalSteps, `等待短信验证码`);
-            const { code } = await lease.waitForVerificationCode();
-            this.logProgress('4-d', totalSteps, `提交短信验证，code=[${code}]`);
-            continueURL = await this.validatePhone(code);
+            this.logProgress('4-a', totalSteps, "进入短信验证流程");
+            continueURL = await this.runSmsVerification();
         }
 
         if (continueURL === `${AUTH_BASE_URL}/sign-in-with-chatgpt/codex/consent`) {
@@ -361,6 +346,13 @@ export class OpenAIClient {
 
         this.logProgress(step++, totalSteps, "提交注册邮箱");
         let continueURL = await this.authorizeContinueForSignup();
+
+        if (continueURL === `${AUTH_BASE_URL}/log-in/password`) {
+            console.log(
+                `[register] 邮箱 ${this.email} 已被注册，跳过注册步骤，由 loginClient 继续走登录流程`,
+            );
+            return continueURL;
+        }
 
         if (continueURL === `${AUTH_BASE_URL}/create-account/password`) {
             totalSteps += 1;
@@ -436,23 +428,8 @@ export class OpenAIClient {
         }
 
         if (continueURL === `${AUTH_BASE_URL}/add-phone`) {
-            if (!this.smsBroker) {
-                throw new Error("未配置 SMS provider，无法进行短信验证");
-            }
-            this.logProgress(step++, totalSteps++, "进入短信验证流程，从接码平台获取号码");
-            const lease = await this.smsBroker.getActivation();
-            this.logProgress(step++, totalSteps++, `发送短信验证码，phone=+${lease.phoneNumber}`);
-            const phoneNumber = `+${lease.phoneNumber}`
-            continueURL = await this.sendPhoneOtp(phoneNumber)
-              // sendPhoneOtp 过程中可能遇到 phone_max_usage_exceed 错误，需要手动标记失败并进行轮换
-              .catch(async (e) => {
-                  await this.smsBroker?.markAsFailed(true)
-                  throw e
-              });
-            this.logProgress(step++, totalSteps++, `等待短信验证码`);
-            const { code } = await lease.waitForVerificationCode();
-            this.logProgress(step++, totalSteps++, `提交短信验证，code=[${code}]`);
-            continueURL = await this.validatePhone(code);
+            this.logProgress(step++, totalSteps++, "进入短信验证流程");
+            continueURL = await this.runSmsVerification();
         }
 
         if (continueURL === `${AUTH_BASE_URL}/about-you`) {
@@ -802,7 +779,82 @@ export class OpenAIClient {
             return this.promptEmailOtp();
         }
         console.log(`autoEmailOtp: provider=${MAILBOX_CONFIG.provider} targetEmail=${this.email}`);
-        return getEmailVerificationCode(this.email);
+        const code = await getEmailVerificationCode(this.email);
+        console.log(`[emailOtp] code=${code}`);
+        return code;
+    }
+
+    private async runSmsVerification(): Promise<string> {
+        if (!this.smsBroker) {
+            throw new Error("未配置 SMS provider，无法进行短信验证");
+        }
+        const MAX_PHONES = 5;
+        const POLLS_PER_PHONE = 10;
+        const MAX_SUBMIT_RETRY = 3;
+
+        let lastError: Error | null = null;
+
+        for (let phoneIdx = 1; phoneIdx <= MAX_PHONES; phoneIdx++) {
+            console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 从 HeroSMS 获取号码`);
+            const lease = await this.smsBroker.getActivation();
+            const phoneNumber = `+${lease.phoneNumber}`;
+
+            try {
+                await this.sendPhoneOtp(phoneNumber);
+                console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信成功 phone=${phoneNumber}`);
+            } catch (error) {
+                console.warn(
+                    `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 发送短信失败 phone=${phoneNumber}: ${(error as Error).message}`,
+                );
+                lastError = error as Error;
+                await this.smsBroker.discardCurrentActivationAndCancelLater();
+                continue;
+            }
+
+            console.log(
+                `[SMS ${phoneIdx}/${MAX_PHONES}] 等待短信验证码 (最多 ${POLLS_PER_PHONE} 次)`,
+            );
+            let code: string;
+            try {
+                const verification = await lease.waitForVerificationCode({
+                    pollAttempts: POLLS_PER_PHONE,
+                    autoMark: false,
+                });
+                code = verification.code;
+                console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 收到短信验证码 code=${code}`);
+            } catch (error) {
+                console.warn(
+                    `[SMS ${phoneIdx}/${MAX_PHONES}] ${POLLS_PER_PHONE} 次轮询未拿到验证码: ${(error as Error).message}`,
+                );
+                lastError = error as Error;
+                await this.smsBroker.markAsFailed(true);
+                continue;
+            }
+
+            let rotateAfterSubmit = false;
+            for (let submitIter = 1; submitIter <= MAX_SUBMIT_RETRY; submitIter++) {
+                try {
+                    const nextURL = await this.validatePhone(code);
+                    await this.smsBroker.markAsSucceed();
+                    return nextURL;
+                } catch (error) {
+                    console.warn(
+                        `[SMS ${phoneIdx}/${MAX_PHONES}] 提交 code 被拒 (${submitIter}/${MAX_SUBMIT_RETRY}): ${(error as Error).message}`,
+                    );
+                    lastError = error as Error;
+                    if (submitIter < MAX_SUBMIT_RETRY) {
+                        await new Promise((resolve) => setTimeout(resolve, 2000));
+                    } else {
+                        rotateAfterSubmit = true;
+                    }
+                }
+            }
+            if (rotateAfterSubmit) {
+                await this.smsBroker.markAsFailed(true);
+            }
+        }
+
+        throw lastError ?? new Error(`SMS 验证失败，已尝试 ${MAX_PHONES} 个号码`);
     }
 
     private async generateRegisterEmail(): Promise<string> {

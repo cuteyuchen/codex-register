@@ -294,9 +294,17 @@ npm run check:cpa -- --refresh --limit 20 -c 8
 
 ```json
 {
-  "provider": "hotmail"
+  "provider": "hotmail",
+  "hotmailMode": "graph"
 }
 ```
+
+`hotmailMode` 决定收取邮件的来源，默认 `graph`：
+
+- `graph`（默认）：使用 `hotmail/tokens.txt` 通过 Microsoft Graph / Outlook REST 拉取邮件。
+- `xiongmaodian`：通过 `https://mail.xiongmaodianjing.top/api/fetch/{邮箱}/1` 公开接口拉取邮件，不再需要 refresh_token，也不会再生成 alias。邮箱直接从 `hotmail/emails.txt` 取，一行一个原始邮箱。注意：因为不带 alias 后缀，同一邮箱不应该被注册两次。
+
+#### `hotmailMode: "graph"`（默认）
 
 邮箱账号放 `hotmail/tokens.txt` 文件里：
 
@@ -328,6 +336,31 @@ someone@hotmail.com----YourPassword123----a016c639-6112-4efe-b2cd-8ef74231bb97--
   - 其他情况：走 Microsoft Graph
 - 读取收件箱和垃圾箱中的验证码邮件
 - 刷新后的 `refresh_token` 会回写到 `tokens.txt`
+
+#### `hotmailMode: "xiongmaodian"`
+
+```json
+{
+  "provider": "hotmail",
+  "hotmailMode": "xiongmaodian"
+}
+```
+
+在 `hotmail/emails.txt` 中写入要使用的 outlook 邮箱，一行一个，例如：
+
+```text
+alice@outlook.com
+bob@outlook.com
+```
+
+程序会：
+
+- 从 `hotmail/emails.txt` 随机选择一个邮箱（不再生成 alias）
+- 通过 `GET https://mail.xiongmaodianjing.top/api/fetch/{邮箱}/1` 拉取邮件列表（无鉴权）
+- 过滤标题/正文/发件人中含 `OpenAI` 或 `ChatGPT` 的邮件，并从中解析 6 位验证码
+- 12 次轮询，每次间隔 5 秒
+
+注意：因为这种模式不会在邮箱前加 `+xxx` 别名后缀，同一邮箱被 OpenAI 注册过一次后通常无法再次使用，请确保 `emails.txt` 列表足够多，或手动剪除已用过的邮箱。
 
 ### 4）gptmail
 
@@ -403,6 +436,8 @@ Cloudflare Worker 部署说明见：[MAIL_WORKER_DEPLOY.md](./MAIL_WORKER_DEPLOY
     - GPTMail 指定生成邮箱时使用的域名，可留空
 - `hotmail`
     - 使用 `./hotmail/tokens.txt` 作为 Hotmail/Outlook 账号来源
+- `hotmailMode`
+    - hotmail 子模式：`graph`（默认，走 Microsoft Graph/REST）或 `xiongmaodian`（走 `mail.xiongmaodianjing.top` 公开接口，读取 `hotmail/emails.txt`）
 - `2925EmailAddress`
     - 2925 邮箱账号
 - `2925Password`

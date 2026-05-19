@@ -2,9 +2,11 @@ import type {
   SmsActivation,
   SmsProvider,
   SmsVerificationCode,
+  SmsWaitForCodeOptions,
 } from "./provider.js";
 
 const ACTIVATION_CANCEL_AND_WITHDRAW_MIN_AGE_MS = 2 * 60 * 1000;
+const ACTIVATION_DEFERRED_CANCEL_MS = 3 * 60 * 1000;
 
 export type ActivationAttemptOutcome = "success" | "failed";
 
@@ -49,17 +51,25 @@ export interface ActivationBrokerHistoryStats {
   phoneStats: Record<string, PhoneUsageStats>;
 }
 
+export interface ActivationWaitForCodeOptions extends SmsWaitForCodeOptions {
+  autoMark?: boolean;
+  rotateOnFailure?: boolean;
+}
+
 export interface ActivationLease extends SmsActivation {
   isNewActivation: boolean;
   requestedAnotherSms: boolean;
   round: number;
-  waitForVerificationCode(): Promise<SmsVerificationCode>;
+  waitForVerificationCode(
+    options?: ActivationWaitForCodeOptions,
+  ): Promise<SmsVerificationCode>;
 }
 
 export interface ISMSActivationBroker {
   getActivation(): Promise<ActivationLease>;
   markAsSucceed(): Promise<void>;
   markAsFailed(rotate?: boolean): Promise<void>;
+  discardCurrentActivationAndCancelLater(delayMs?: number): Promise<void>;
 }
 
 export interface ActivationBrokerState<Activation extends SmsActivation> {
@@ -200,6 +210,57 @@ export class ActivationBroker<
     await this.finishAttempt("failed", rotate);
   }
 
+  async discardCurrentActivationAndCancelLater(
+    delayMs = ACTIVATION_DEFERRED_CANCEL_MS,
+  ): Promise<void> {
+    const activation = this.currentActivation;
+    const usage = this.usage;
+    if (!activation || !usage) {
+      throw new Error("当前没有可废弃的 activation");
+    }
+
+    if (!this.attemptActive) {
+      throw new Error("当前没有进行中的 attempt");
+    }
+
+    this.attemptActive = false;
+    usage.finishedAttemptCount += 1;
+    usage.lastOutcome = "failed";
+    usage.lastAttemptFinishedAt = new Date();
+    usage.failureCount += 1;
+    this.history.totalAttemptsFailed += 1;
+    this.recordPhoneAttemptOutcome(
+      activation.phoneNumber,
+      activation.activationId,
+      "failed",
+    );
+    this.history.totalDiscardedActivations += 1;
+    this.recordPhoneRelease(activation.phoneNumber, "discard");
+
+    const activationId = activation.activationId;
+    const phoneNumber = activation.phoneNumber;
+    const cancelDelayMs = delayMs > 0 ? Math.floor(delayMs) : ACTIVATION_DEFERRED_CANCEL_MS;
+    console.log(
+      `[pollSMSCode] 废弃 phone=+${phoneNumber} activationId=${activationId}，${Math.ceil(cancelDelayMs / 1000)}s 后取消激活(status=8)`,
+    );
+    this.reset();
+
+    const timer = setTimeout(() => {
+      void this.provider.cancelActivation(activationId)
+        .then(() => {
+          console.log(
+            `[pollSMSCode] 已取消废弃号码 activationId=${activationId} phone=+${phoneNumber} status=8`,
+          );
+        })
+        .catch((error) => {
+          console.warn(
+            `[pollSMSCode] 取消废弃号码失败 activationId=${activationId} phone=+${phoneNumber}: ${(error as Error).message}`,
+          );
+        });
+    }, cancelDelayMs);
+    timer.unref?.();
+  }
+
   private async finishAttempt(outcome: ActivationAttemptOutcome, rotate?: boolean): Promise<void> {
     const activation = this.currentActivation;
     if (!activation || !this.usage) {
@@ -246,6 +307,21 @@ export class ActivationBroker<
   async rotateActivation(outcome: ActivationAttemptOutcome) {
       const activation = this.currentActivation!;
       const usage = this.usage!;
+
+      // HeroSMS 实测对 complete(status 6) 和 cancel(status 8) 都强制 120s 最低活动期，
+      // 不等满直接 release 会抛 EARLY_CANCEL_DENIED 中断主流程。
+      const startedAt = usage.lastActivationAt;
+      if (startedAt) {
+        const ageMs = Date.now() - startedAt.getTime();
+        if (ageMs < ACTIVATION_CANCEL_AND_WITHDRAW_MIN_AGE_MS) {
+          const waitMs = ACTIVATION_CANCEL_AND_WITHDRAW_MIN_AGE_MS - ageMs;
+          console.log(
+            `[pollSMSCode] 等待 ${Math.ceil(waitMs / 1000)}s 满足 HeroSMS 最低活动期 phone=+${activation.phoneNumber}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
+      }
+
       // Release rule:
       // - if this activation has ever succeeded, it must be completed
       // - only activations with zero successes and age >= 2 minutes
@@ -371,12 +447,24 @@ export class ActivationBroker<
       isNewActivation,
       requestedAnotherSms,
       round: this.round,
-      waitForVerificationCode: async () => {
+      waitForVerificationCode: async (options) => {
+        const autoMark = options?.autoMark ?? true;
+        const rotateOnFailure = options?.rotateOnFailure ?? false;
+        const providerOptions: SmsWaitForCodeOptions = {};
+        if (options?.pollAttempts !== undefined) {
+          providerOptions.pollAttempts = options.pollAttempts;
+        }
+        if (options?.pollIntervalMs !== undefined) {
+          providerOptions.pollIntervalMs = options.pollIntervalMs;
+        }
         try {
           const verification = await this.provider.waitForVerificationCode(
             activation.activationId,
+            providerOptions,
           );
-          await this.markAsSucceed();
+          if (autoMark) {
+            await this.markAsSucceed();
+          }
           return {
             code: verification.code,
             source: verification.source,
@@ -385,7 +473,9 @@ export class ActivationBroker<
             rawStatus: verification.rawStatus,
           };
         } catch (e) {
-          await this.markAsFailed();
+          if (autoMark) {
+            await this.markAsFailed(rotateOnFailure);
+          }
           throw e;
         }
       },

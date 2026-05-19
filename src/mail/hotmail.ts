@@ -1,7 +1,9 @@
 // @ts-nocheck
 import {readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
+import {appConfig} from "../config.js";
 import {generateEmailName} from "./generate-email-name.js";
+import {createHotmailXiongmaodianProvider} from "./hotmail-xiongmaodian.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
 const HOTMAIL_TOKEN_DIR = path.resolve(process.cwd(), "hotmail");
@@ -399,6 +401,9 @@ async function resolveAccountForEmail(email) {
 }
 
 export function createHotmailProvider() {
+    if (appConfig.hotmailMode === "xiongmaodian") {
+        return createHotmailXiongmaodianProvider();
+    }
     return {
         async getEmailAddress() {
             const accounts = await loadAccounts();

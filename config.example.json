@@ -13,6 +13,7 @@
   "cloudflareEmailDomain": "",
   "cloudflareApiBaseUrl": "",
   "cloudflareApiKey": "",
+  "hotmailMode": "graph",
   "heroSMSApiKey": "",
   "heroSMSCountry": 52,
   "heroSMSMaxPrice": 0.05,

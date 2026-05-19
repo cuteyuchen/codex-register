@@ -2,6 +2,7 @@ import {readFileSync} from "node:fs";
 import path from "node:path";
 
 export type MailProviderName = "2925" | "gmail" | "proxiedmail" | "cloudflare" | "hotmail" | "gptmail";
+export type HotmailMode = "graph" | "xiongmaodian";
 
 interface AppConfigFile {
     provider?: unknown;
@@ -17,6 +18,7 @@ interface AppConfigFile {
     cloudflareApiBaseUrl?: unknown;
     cloudflareApiKey?: unknown;
     defaultProxyUrl?: unknown;
+    hotmailMode?: unknown;
     heroSMSApiKey?: unknown;
     heroSMSCountry?: unknown;
     heroSMSMaxPrice?: unknown;
@@ -41,6 +43,7 @@ export interface AppConfig {
     cloudflareApiBaseUrl: string;
     cloudflareApiKey: string;
     defaultProxyUrl: string;
+    hotmailMode: HotmailMode;
     heroSMSApiKey?: string;
     heroSMSCountry: number;
     heroSMSMaxPrice: number;
@@ -65,6 +68,7 @@ const DEFAULT_CONFIG: AppConfig = {
     cloudflareApiBaseUrl: "",
     cloudflareApiKey: "",
     defaultProxyUrl: "http://127.0.0.1:10808",
+    hotmailMode: "graph",
     heroSMSApiKey: undefined,
     heroSMSCountry: 52,
     heroSMSMaxPrice: 0.05,
@@ -87,6 +91,13 @@ function normalizeProvider(value: unknown): MailProviderName {
         return value;
     }
     return DEFAULT_CONFIG.provider;
+}
+
+function normalizeHotmailMode(value: unknown): HotmailMode {
+    if (value === "graph" || value === "xiongmaodian") {
+        return value;
+    }
+    return DEFAULT_CONFIG.hotmailMode;
 }
 
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
@@ -162,6 +173,7 @@ function loadConfig(): AppConfig {
             typeof parsed.defaultProxyUrl === "string"
                 ? parsed.defaultProxyUrl.trim()
                 : DEFAULT_CONFIG.defaultProxyUrl,
+        hotmailMode: normalizeHotmailMode(parsed.hotmailMode),
         heroSMSApiKey:
           typeof parsed.heroSMSApiKey === "string"
             ? parsed.heroSMSApiKey.trim()
