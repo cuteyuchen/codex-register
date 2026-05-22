@@ -7,9 +7,9 @@ import {
     removeEmailFromSourceFile,
 } from "./email-error-recorder.js";
 import {
-    getHotmailXiongmaodianEmailsFile,
-    getHotmailXiongmaodianRemainingEmailCount,
-} from "./mail/hotmail-xiongmaodian.js";
+    getHotmailEmailsFile,
+    getHotmailRemainingEmailCount,
+} from "./mail/hotmail-email-queue.js";
 import {OpenAIClient} from "./openai.js";
 import {createSMSBroker} from "./sms/index.js";
 
@@ -194,15 +194,15 @@ async function main() {
         return;
     }
 
-    const usesXiongmaodianQueue = appConfig.provider === "hotmail" && appConfig.hotmailMode === "xiongmaodian";
-    if (usesXiongmaodianQueue) {
-        const errorFile = await clearErrorEmailFile(getHotmailXiongmaodianEmailsFile());
+    const usesHotmailEmailQueue = appConfig.provider === "hotmail";
+    if (usesHotmailEmailQueue) {
+        const errorFile = await clearErrorEmailFile(await getHotmailEmailsFile());
         console.log(`[失败记录] 已清理 ${errorFile}`);
     }
 
     while (!maxRounds || round < maxRounds) {
-        if (usesXiongmaodianQueue) {
-            const remainingEmails = await getHotmailXiongmaodianRemainingEmailCount();
+        if (usesHotmailEmailQueue) {
+            const remainingEmails = await getHotmailRemainingEmailCount();
             if (remainingEmails <= 0) {
                 console.log("邮箱列表已全部使用完毕，自动停止");
                 break;

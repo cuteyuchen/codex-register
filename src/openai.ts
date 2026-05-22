@@ -814,7 +814,8 @@ export class OpenAIClient {
             throw new Error("未配置 SMS provider，无法进行短信验证");
         }
         const MAX_PHONES = 5;
-        const POLLS_PER_PHONE = 10;
+        const POLLS_PER_PHONE = 20;
+        const MAX_SENDS_PER_PHONE = 2;
         const MAX_SUBMIT_RETRY = 3;
 
         let lastError: Error | null = null;
@@ -836,23 +837,64 @@ export class OpenAIClient {
                 continue;
             }
 
-            console.log(
-                `[SMS ${phoneIdx}/${MAX_PHONES}] 等待短信验证码 (最多 ${POLLS_PER_PHONE} 次)`,
-            );
-            let code: string;
-            try {
-                const verification = await lease.waitForVerificationCode({
-                    pollAttempts: POLLS_PER_PHONE,
-                    autoMark: false,
-                });
-                code = verification.code;
-                console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 收到短信验证码 code=${code}`);
-            } catch (error) {
-                console.warn(
-                    `[SMS ${phoneIdx}/${MAX_PHONES}] ${POLLS_PER_PHONE} 次轮询未拿到验证码: ${(error as Error).message}`,
+            let currentLease = lease;
+            let code: string | null = null;
+            let shouldDiscardPhone = false;
+
+            for (let sendIdx = 1; sendIdx <= MAX_SENDS_PER_PHONE; sendIdx += 1) {
+                console.log(
+                    `[SMS ${phoneIdx}/${MAX_PHONES}] 等待短信验证码 (第 ${sendIdx} 次发送，最多 ${POLLS_PER_PHONE} 次)`,
                 );
-                lastError = error as Error;
-                await this.smsBroker.markAsFailed(true);
+
+                try {
+                    const verification = await currentLease.waitForVerificationCode({
+                        pollAttempts: POLLS_PER_PHONE,
+                        autoMark: false,
+                    });
+                    code = verification.code;
+                    console.log(`[SMS ${phoneIdx}/${MAX_PHONES}] 收到短信验证码 code=${code}`);
+                    break;
+                } catch (error) {
+                    const err = error as Error;
+                    console.warn(
+                        `[SMS ${phoneIdx}/${MAX_PHONES}] 第 ${sendIdx} 次发送的 ${POLLS_PER_PHONE} 次轮询未拿到验证码: ${err.message}`,
+                    );
+                    lastError = err;
+
+                    if (sendIdx < MAX_SENDS_PER_PHONE) {
+                        console.log(
+                            `[SMS ${phoneIdx}/${MAX_PHONES}] 重新发送验证码并再次轮询同一号码 phone=${phoneNumber}`,
+                        );
+                        await this.smsBroker.markAsFailed(false);
+                        currentLease = await this.smsBroker.getActivation();
+                        try {
+                            await this.sendPhoneOtp(phoneNumber);
+                            console.log(
+                                `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 重新发送短信成功 phone=${phoneNumber}`,
+                            );
+                        } catch (sendError) {
+                            lastError = sendError as Error;
+                            console.warn(
+                                `[SMS ${phoneIdx}/${MAX_PHONES}] OpenAI 重新发送短信失败 phone=${phoneNumber}: ${(sendError as Error).message}`,
+                            );
+                            await this.smsBroker.discardCurrentActivationAndCancelLater();
+                            shouldDiscardPhone = true;
+                            break;
+                        }
+                        continue;
+                    }
+
+                    shouldDiscardPhone = true;
+                    await this.smsBroker.discardCurrentActivationAndCancelLater();
+                    break;
+                }
+            }
+
+            if (shouldDiscardPhone) {
+                continue;
+            }
+
+            if (!code) {
                 continue;
             }
 

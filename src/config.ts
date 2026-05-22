@@ -2,7 +2,7 @@ import {readFileSync} from "node:fs";
 import path from "node:path";
 
 export type MailProviderName = "2925" | "gmail" | "proxiedmail" | "cloudflare" | "hotmail" | "gptmail";
-export type HotmailMode = "graph" | "xiongmaodian";
+export type HotmailMode = "graph" | "xiongmaodian" | "xiongmaodian_token";
 
 interface AppConfigFile {
     provider?: unknown;
@@ -94,7 +94,7 @@ function normalizeProvider(value: unknown): MailProviderName {
 }
 
 function normalizeHotmailMode(value: unknown): HotmailMode {
-    if (value === "graph" || value === "xiongmaodian") {
+    if (value === "graph" || value === "xiongmaodian" || value === "xiongmaodian_token") {
         return value;
     }
     return DEFAULT_CONFIG.hotmailMode;

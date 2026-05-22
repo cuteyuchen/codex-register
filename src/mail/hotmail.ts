@@ -2,8 +2,8 @@
 import {readFile, writeFile} from "node:fs/promises";
 import path from "node:path";
 import {appConfig} from "../config.js";
-import {recordEmailSourceFile} from "../email-error-recorder.js";
-import {generateEmailName} from "./generate-email-name.js";
+import {appendErrorEmail} from "../email-error-recorder.js";
+import {nextHotmailEmailEntry} from "./hotmail-email-queue.js";
 import {createHotmailXiongmaodianProvider} from "./hotmail-xiongmaodian.js";
 import {findLatestVerificationMail} from "./verification-matcher.js";
 
@@ -18,6 +18,7 @@ const HOTMAIL_POLL_ATTEMPTS = 12;
 const HOTMAIL_POLL_INTERVAL_MS = 5000;
 const HOTMAIL_MESSAGE_FETCH_LIMIT = 10;
 const HOTMAIL_FOLDER_IDS = ["inbox", "junkemail"];
+const XIONGMAODIAN_TOKEN_API_URL = "https://mail.xiongmaodianjing.top/api/fetch_by_token";
 const aliasAccountMap = new Map();
 let accountCache = null;
 
@@ -71,37 +72,16 @@ function isAccessTokenExpired(account) {
 async function loadTextAccounts() {
     try {
         const raw = await readFile(HOTMAIL_TOKENS_FILE, "utf8");
-        return raw
+        const trimmed = raw.trim();
+        if (!trimmed) {
+            return [];
+        }
+
+        return trimmed
             .split(/\r?\n/)
             .map((line) => line.trim())
-            .filter(Boolean)
-            .map((line, index) => {
-                const [email, password, clientId, refreshToken] = line.split("----");
-                const loginHint = normalizeEmail(email);
-                const account = {
-                    sourceType: "txt",
-                    fileName: path.basename(HOTMAIL_TOKENS_FILE),
-                    filePath: HOTMAIL_TOKENS_FILE,
-                    lineIndex: index,
-                    lineRaw: line,
-                    loginHint,
-                    password: String(password ?? "").trim(),
-                    sourceAccount: loginHint,
-                    tenant: "consumers",
-                    clientId: String(clientId ?? "").trim(),
-                    redirectUri: "",
-                    scope: "",
-                    tokenType: "Bearer",
-                    accessToken: "",
-                    refreshToken: String(refreshToken ?? "").trim(),
-                    idToken: "",
-                    obtainedAt: "",
-                    expiresIn: 0,
-                    extExpiresIn: 0,
-                    raw: {},
-                };
-                return loginHint && account.clientId && account.refreshToken ? account : null;
-            })
+            .filter((line) => line && !line.startsWith("#"))
+            .map((line, index) => parseDelimitedTokenLine(line, index))
             .filter(Boolean);
     } catch (error) {
         if (error?.code === "ENOENT") {
@@ -109,6 +89,57 @@ async function loadTextAccounts() {
         }
         throw error;
     }
+}
+
+function buildTextAccount({
+    email,
+    password = "",
+    clientId,
+    refreshToken,
+    index = -1,
+    lineRaw = "",
+    raw = {},
+}) {
+    const loginHint = normalizeEmail(email);
+    const account = {
+        sourceType: "txt",
+        fileName: path.basename(HOTMAIL_TOKENS_FILE),
+        filePath: HOTMAIL_TOKENS_FILE,
+        lineIndex: index,
+        lineRaw,
+        loginHint,
+        password: String(password ?? "").trim(),
+        sourceAccount: loginHint,
+        tenant: "consumers",
+        clientId: String(clientId ?? "").trim(),
+        redirectUri: "",
+        scope: "",
+        tokenType: "Bearer",
+        accessToken: "",
+        refreshToken: String(refreshToken ?? "").trim(),
+        idToken: "",
+        obtainedAt: "",
+        expiresIn: 0,
+        extExpiresIn: 0,
+        raw,
+    };
+    return loginHint && account.clientId && account.refreshToken ? account : null;
+}
+
+function parseDelimitedTokenLine(line, index) {
+    const parts = String(line ?? "").split("----");
+    if (parts.length < 4) {
+        return null;
+    }
+    const [email, password, clientId, ...refreshTokenParts] = parts;
+    return buildTextAccount({
+        email,
+        password,
+        clientId,
+        refreshToken: refreshTokenParts.join("----"),
+        index,
+        lineRaw: line,
+    });
 }
 
 async function loadAccounts() {
@@ -124,6 +155,37 @@ async function loadAccounts() {
 
     accountCache = accounts;
     return accounts;
+}
+
+async function nextHotmailEmailFromQueue(label) {
+    while (true) {
+        const entry = await nextHotmailEmailEntry(label);
+        const email = normalizeEmail(entry.email);
+        try {
+            const account = entry.clientId && entry.refreshToken
+                ? buildTextAccount({
+                    email,
+                    password: entry.password,
+                    clientId: entry.clientId,
+                    refreshToken: entry.refreshToken,
+                    index: entry.lineIndex,
+                    lineRaw: entry.lineRaw,
+                })
+                : await resolveAccountForEmail(email);
+            if (!account) {
+                throw new Error(`邮箱行缺少 client_id 或 refresh_token: ${email}`);
+            }
+            aliasAccountMap.set(normalizeEmail(email), account);
+            return {email, account};
+        } catch (error) {
+            await appendErrorEmail(email, entry.sourceFile);
+            console.warn(
+                `${label}: ${email} 未匹配到可用 token，已记录失败并跳过: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+    }
 }
 
 async function persistTextAccount(account) {
@@ -288,17 +350,66 @@ async function graphRequest(account, url) {
     return response.json();
 }
 
-function chooseRandomAccount(accounts) {
-    return accounts[Math.floor(Math.random() * accounts.length)];
+function parseXiongmaodianTokenTimestamp(date) {
+    const raw = String(date ?? "").trim();
+    if (!raw) {
+        return Date.now();
+    }
+    const iso = raw.includes("T") ? raw : raw.replace(" ", "T");
+    const withZone = /[zZ]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`;
+    const parsed = Date.parse(withZone);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
 }
 
-function buildAliasAddress(account) {
-    const mailbox = normalizeEmail(account.loginHint);
-    const [localPart, domain] = mailbox.split("@");
-    if (!localPart || !domain) {
-        throw new Error(`Hotmail 邮箱格式不正确: ${account.loginHint}`);
+async function fetchXiongmaodianByToken(account, limit = 1) {
+    const response = await fetch(XIONGMAODIAN_TOKEN_API_URL, {
+        method: "POST",
+        headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+        },
+        body: JSON.stringify({
+            email: account.loginHint,
+            client_id: account.clientId,
+            token: account.refreshToken,
+            limit,
+        }),
+    });
+    const rawBody = await response.text();
+    if (!response.ok) {
+        throw new Error(`xiongmaodian fetch_by_token HTTP ${response.status}: ${rawBody}`);
     }
-    return `${localPart}+${generateEmailName()}@${domain}`;
+    try {
+        const payload = JSON.parse(rawBody);
+        if (payload?.status !== "success" || !Array.isArray(payload.emails)) {
+            throw new Error(`payload invalid: status=${String(payload?.status)}`);
+        }
+        return payload.emails;
+    } catch (error) {
+        throw new Error(`xiongmaodian fetch_by_token 返回解析失败: ${(error instanceof Error ? error.message : String(error))} body=${rawBody}`);
+    }
+}
+
+async function getLatestXiongmaodianTokenVerificationMessage(targetEmail, account) {
+    const emails = await fetchXiongmaodianByToken(account, 1);
+    console.log(`hotmailXiongmaodianTokenMessagesFetched: targetEmail=${targetEmail} mailbox=${account.loginHint} count=${emails.length}`);
+    return findLatestVerificationMail(
+        emails.map((mail) => ({
+            sender: String(mail.from ?? ""),
+            recipient: targetEmail,
+            subject: String(mail.subject ?? ""),
+            content: String(mail.html_body ?? "") || String(mail.text_body ?? ""),
+            timestamp: parseXiongmaodianTokenTimestamp(mail.date),
+            extraTexts: [String(mail.text_body ?? "")],
+        })),
+        {
+            targetEmail,
+            candidateMatcher: (mail) =>
+                /(OpenAI|ChatGPT)/i.test(
+                    `${mail.subject ?? ""}\n${mail.content ?? ""}\n${mail.sender ?? ""}`,
+                ),
+        },
+    );
 }
 
 function normalizeRecipientList(recipients) {
@@ -405,14 +516,48 @@ export function createHotmailProvider() {
     if (appConfig.hotmailMode === "xiongmaodian") {
         return createHotmailXiongmaodianProvider();
     }
+    if (appConfig.hotmailMode === "xiongmaodian_token") {
+        return {
+            async getEmailAddress() {
+                const {email} = await nextHotmailEmailFromQueue("xiongmaodianTokenEmailQueue");
+                return email;
+            },
+            async getEmailVerificationCode(email) {
+                const targetEmail = normalizeEmail(email);
+                const account = await resolveAccountForEmail(targetEmail);
+
+                for (let attempt = 1; attempt <= HOTMAIL_POLL_ATTEMPTS; attempt += 1) {
+                    console.log(
+                        `pollHotmailOtp(xiongmaodian_token): attempt=${attempt}/${HOTMAIL_POLL_ATTEMPTS} targetEmail=${targetEmail} mailbox=${account.loginHint}`,
+                    );
+
+                    let message = null;
+                    try {
+                        message = await getLatestXiongmaodianTokenVerificationMessage(targetEmail, account);
+                    } catch (error) {
+                        console.warn(
+                            `pollHotmailOtp(xiongmaodian_token) 拉取失败: ${(error instanceof Error ? error.message : String(error))}`,
+                        );
+                    }
+
+                    if (message?.verificationCode) {
+                        console.log(`hotmailOtpCode(xiongmaodian_token): ${message.verificationCode}`);
+                        return message.verificationCode;
+                    }
+
+                    if (attempt < HOTMAIL_POLL_ATTEMPTS) {
+                        await new Promise((resolve) => setTimeout(resolve, HOTMAIL_POLL_INTERVAL_MS));
+                    }
+                }
+
+                throw new Error(`Hotmail(xiongmaodian_token) 中未找到验证码: targetEmail=${targetEmail}`);
+            },
+        };
+    }
     return {
         async getEmailAddress() {
-            const accounts = await loadAccounts();
-            const account = chooseRandomAccount(accounts);
-            const aliasEmail = buildAliasAddress(account);
-            aliasAccountMap.set(normalizeEmail(aliasEmail), account);
-            recordEmailSourceFile(aliasEmail, HOTMAIL_TOKENS_FILE);
-            return aliasEmail;
+            const {email} = await nextHotmailEmailFromQueue("hotmailEmailQueue");
+            return email;
         },
         async getEmailVerificationCode(email) {
             const account = await resolveAccountForEmail(email);

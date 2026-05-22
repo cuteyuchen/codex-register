@@ -1,10 +1,11 @@
-import {readFile} from "node:fs/promises";
-import path from "node:path";
-import {recordEmailSourceFile} from "../email-error-recorder.js";
 import type {EmailCodeProvider, EmailVerificationCodeOptions} from "../mailbox.js";
+import {
+    getHotmailEmailsFile,
+    getHotmailRemainingEmailCount,
+    nextHotmailEmail,
+} from "./hotmail-email-queue.js";
 import {findLatestVerificationMail, normalizeMailbox} from "./verification-matcher.js";
 
-const EMAILS_FILE = path.resolve(process.cwd(), "hotmail", "emails.txt");
 const API_BASE = "https://mail.xiongmaodianjing.top/api/fetch";
 const POLL_ATTEMPTS = 12;
 const POLL_INTERVAL_MS = 5000;
@@ -23,45 +24,14 @@ interface XmdResponse {
     emails?: XmdEmail[];
 }
 
-let emailQueue: string[] | null = null;
 const lastAcceptedCodeByEmail = new Map<string, string>();
 
-async function loadEmails(): Promise<string[]> {
-    if (emailQueue) {
-        return emailQueue;
-    }
-    let raw: string;
-    try {
-        raw = await readFile(EMAILS_FILE, "utf8");
-    } catch {
-        throw new Error(
-            `未找到 ${EMAILS_FILE}，请创建该文件并按一行一个的格式写入 outlook 邮箱`,
-        );
-    }
-    const list = Array.from(
-        new Set(
-            raw
-                .split(/\r?\n/)
-                .map((line) => line.trim())
-                .filter((line) => line.length > 0 && !line.startsWith("#"))
-                .map((line) => normalizeMailbox(line))
-                .filter(Boolean),
-        ),
-    );
-    if (list.length === 0) {
-        throw new Error(`${EMAILS_FILE} 为空，请填入至少一个 outlook 邮箱`);
-    }
-    emailQueue = list;
-    return emailQueue;
-}
-
-export function getHotmailXiongmaodianEmailsFile(): string {
-    return EMAILS_FILE;
+export async function getHotmailXiongmaodianEmailsFile(): Promise<string> {
+    return getHotmailEmailsFile();
 }
 
 export async function getHotmailXiongmaodianRemainingEmailCount(): Promise<number> {
-    const queue = await loadEmails();
-    return queue.length;
+    return getHotmailRemainingEmailCount();
 }
 
 function parseTimestamp(date: string | undefined): number {
@@ -102,14 +72,7 @@ function normalizeCode(value: string): string {
 export function createHotmailXiongmaodianProvider(): EmailCodeProvider {
     return {
         async getEmailAddress(): Promise<string> {
-            const queue = await loadEmails();
-            const email = queue.shift();
-            if (!email) {
-                throw new Error(`${EMAILS_FILE} 中的邮箱已全部使用完毕`);
-            }
-            recordEmailSourceFile(email, EMAILS_FILE);
-            console.log(`xiongmaodianEmailQueue: remaining=${queue.length} selected=${email}`);
-            return email;
+            return nextHotmailEmail("xiongmaodianEmailQueue");
         },
         async getEmailVerificationCode(
             email: string,

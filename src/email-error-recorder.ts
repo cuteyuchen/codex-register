@@ -4,7 +4,8 @@ import path from "node:path";
 const emailSourceFileByEmail = new Map<string, string>();
 
 function normalizeEmail(email: string): string {
-    return String(email ?? "").trim().toLowerCase();
+    const raw = String(email ?? "").trim().toLowerCase();
+    return raw.split("----")[0]?.trim() ?? "";
 }
 
 export function recordEmailSourceFile(email: string, sourceFilePath: string): void {
